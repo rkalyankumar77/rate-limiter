@@ -2,17 +2,15 @@ package in.kodekrafter.ratelimiter.impl;
 
 import in.kodekrafter.ratelimiter.RateLimiter;
 
-import java.time.Duration;
 import java.time.Instant;
-import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
 
 public class TokenBucketRateLimiter implements RateLimiter {
-
     private final long capacity;
     private final double refillRate;
-
-    private final Map<String, Bucket> buckets = new HashMap<>();
+    private final Map<String, Bucket> buckets = new ConcurrentHashMap<>();
 
     public TokenBucketRateLimiter(long capacity, double refillRate) {
         this.capacity = capacity;
@@ -21,21 +19,40 @@ public class TokenBucketRateLimiter implements RateLimiter {
 
     @Override
     public boolean tryAcquire(String key) {
-        Bucket bucket = buckets.compute(key, (k, existingBucket) -> {
-           if (existingBucket == null) {
-               return new Bucket(capacity - 1.0, Instant.now());
-           }
-           Instant now = Instant.now();
-           Duration elapsed = Duration.between(existingBucket.lastRefill, now);
-           double tokensToAdd = elapsed.toMillis() / refillRate * 1000.0;
-           double newTokens = Math.min(existingBucket.tokens + tokensToAdd, capacity);
-           if (newTokens >= 1){
-               return new Bucket(newTokens - 1, now);
-           }
-           return existingBucket;
-        });
-        return bucket.tokens >= 0;
+        Bucket bucket = buckets.computeIfAbsent(key, k -> new Bucket(capacity, refillRate));
+        return bucket.tryConsume();
     }
 
-    record Bucket(double tokens, Instant lastRefill) {}
+    private static class Bucket {
+        private final long capacity;
+        private final double refillRate;
+        private final AtomicLong tokens;
+        private volatile Instant lastRefillTime;
+
+        public Bucket(long capacity, double refillRate) {
+            this.capacity = capacity;
+            this.refillRate = refillRate;
+            this.tokens = new AtomicLong(capacity);
+            this.lastRefillTime = Instant.now();
+        }
+
+        public synchronized boolean tryConsume() {
+            refill();
+            if (tokens.get() > 0) {
+                tokens.decrementAndGet();
+                return true;
+            }
+            return false;
+        }
+
+        private void refill() {
+            Instant now = Instant.now();
+            long elapsedTime = now.toEpochMilli() - lastRefillTime.toEpochMilli();
+            long newTokens = (long) (elapsedTime * refillRate / 1000);
+            if (newTokens > 0) {
+                tokens.getAndUpdate(current -> Math.min(capacity, current + newTokens));
+                lastRefillTime = now;
+            }
+        }
+    }
 }
