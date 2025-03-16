@@ -1,12 +1,14 @@
 package in.kodekrafter.ratelimiter.impl;
 
 import in.kodekrafter.ratelimiter.RateLimiter;
+import lombok.extern.slf4j.Slf4j;
 
 import java.time.Instant;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 
+@Slf4j
 public class TokenBucketRateLimiter implements RateLimiter {
     private final long capacity;
     private final double refillRate;
@@ -40,17 +42,19 @@ public class TokenBucketRateLimiter implements RateLimiter {
             refill();
             if (tokens.get() > 0) {
                 tokens.decrementAndGet();
+                log.info("Consumed {} tokens", tokens.get());
                 return true;
             }
             return false;
         }
 
-        private void refill() {
+        private synchronized void refill() {
             Instant now = Instant.now();
             long elapsedTime = now.toEpochMilli() - lastRefillTime.toEpochMilli();
             long newTokens = (long) (elapsedTime * refillRate / 1000);
             if (newTokens > 0) {
                 tokens.getAndUpdate(current -> Math.min(capacity, current + newTokens));
+                log.info("Refilled tokens {}", tokens.get());
                 lastRefillTime = now;
             }
         }
